@@ -1,0 +1,280 @@
+version: 2.1
+
+
+tagFilters: &onlyRunOnTags
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^v([0-9]{1}|[1-9][0-9]+)\.([0-9]{1}|[1-9][0-9]+)\.([0-9]{1}|[1-9][0-9]+)($|[-+][0-9A-Za-z+.-]+$)/
+
+branchFilters: &onlyRunOnBranches
+  filters:
+    branches:
+      only:
+        - master
+        - circle-ci
+    tags:
+      ignore: /.*/
+
+executors:
+  xcode:
+    macos:
+      xcode: 11.5.0
+
+commands:
+  setup:
+    description: Runs before each job and checks out the source code
+    steps:
+      - checkout
+      - install_gems
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+  install_gems:
+    description: Installs ruby gems in the Gemfile
+    steps:
+      - run:
+          name: Set Ruby Version
+          command: echo 'chruby ruby-2.7' >> ~/.bash_profile
+      - restore_cache:
+          key: 1-gems-{{ checksum "Gemfile.lock" }}
+      - run: bundle check || bundle install --path vendor/bundle
+      - save_cache:
+          key: 1-gems-{{ checksum "Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+      - run: bundle
+  install_brew_dependencies:
+    description: Installs homebrew dependencies
+    steps:
+      - run: brew bundle
+
+  build_carthage:
+    description: Builds all schemes using carthage
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: carthage build --no-skip-current
+
+  build_swift_packages:
+    description: Builds swift packages using xcodebuild
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: sh ./scripts/run.sh build spm
+
+  build_xcode:
+    description: Runs xcode build for the FacebookSDK workspace with a given scheme, and configuration
+    parameters:
+      scheme:
+        type: string
+      configuration:
+        default: Debug
+        type: string
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Run xcodebuild with parameters
+          command: |
+            xcodebuild build \
+              -workspace FacebookSDK.xcworkspace \
+              -scheme << parameters.scheme >> \
+              -configuration << parameters.configuration >>
+
+  build_xcode_debug:
+    description: Builds the debug configuration for all schemes using xcodebuild
+    steps:
+      - build_xcode:
+          scheme: BuildCoreKitBasics
+      - build_xcode:
+          scheme: BuildAllKits
+      - build_xcode:
+          scheme: BuildAllKits_TV
+
+  build_xcode_release:
+    description: Builds the debug configuration for all schemes using xcodebuild
+    steps:
+      - build_xcode:
+          scheme: BuildCoreKitBasics
+          configuration: Release
+      - build_xcode:
+          scheme: BuildAllKits
+          configuration: Release
+      - build_xcode:
+          scheme: BuildAllKits_TV
+          configuration: Release
+
+  integrate_spm:
+    description: Builds a project that includes the Swift Packages
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: sh ./scripts/run.sh build spm-integration
+
+  lint_cocoapods:
+    description: Lints cocoapods using `pod lib lint` command
+    parameters:
+      arguments:
+        default: ''
+        type: string
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: sh ./scripts/run.sh lint cocoapods << parameters.arguments >>
+
+  lint_swift:
+    description: Lints using Swiftlint
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: sh ./scripts/run.sh lint swift
+
+  build_dynamic_for_release:
+    description: Builds and archives dynamic libraries built with Carthage
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      # - run: sh ./scripts/run.sh release github dynamic
+      - run: mkdir -p ./build/Release && echo "foo" > ./build/Release/foo.txt
+      - persist_to_workspace:
+          root: .
+          paths:
+            - build/Release
+
+  publish_dynamic:
+    description: Publishes archived dynamic libraries to Github
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: "Publish Release on GitHub"
+          command: |
+            echo "ls build/Release"
+            ls build/Release
+            VERSION=$CIRCLE_TAG
+            ghr \
+              -t ${GITHUB_ACCESS_TOKEN} \
+              -u ${CIRCLE_PROJECT_USERNAME} \
+              -r ${CIRCLE_PROJECT_REPONAME}  \
+              -c ${CIRCLE_SHA1} \
+              -draft \
+              ${VERSION} \
+              build/Release
+
+  verify_spm_headers:
+    description: Verifies that all public headers are available when using Swift Package Manager
+    steps:
+      - attach_workspace:
+          at: .
+      - install_brew_dependencies
+      - run: sh scripts/run.sh verify-spm-headers
+
+jobs:
+  setup:
+    executor: xcode
+    steps:
+      - setup
+  build-dynamic-for-release:
+    executor: xcode
+    steps:
+      - build_dynamic_for_release
+  build-swift-packages:
+    executor: xcode
+    steps:
+      - build_swift_packages
+  build-xcode-debug:
+    executor: xcode
+    steps:
+      - build_xcode_debug
+  build-xcode-release:
+    executor: xcode
+    steps:
+      - build_xcode_release
+  build-carthage:
+    executor: xcode
+    steps:
+      - build_carthage
+  integrate-spm:
+    executor: xcode
+    steps:
+      - integrate_spm
+  lint-cocoapods:
+    executor: xcode
+    steps:
+      - lint_cocoapods
+  lint-cocoapods-static:
+    executor: xcode
+    steps:
+      - lint_cocoapods:
+          arguments: --use-libraries
+  lint-swift:
+    executor: xcode
+    steps:
+      - lint_swift
+  publish-dynamic:
+    docker:
+      - image: cibuilds/github:0.10
+    steps:
+      - publish_dynamic
+  verify-spm-headers:
+    executor: xcode
+    steps:
+      - verify_spm_headers
+
+workflows:
+  # test:
+  #   jobs:
+  #     - setup:
+  #         # Since all of the jobs depend on this setup step
+  #         # we  only need to filter branches for this job.
+  #         # The rest of the jobs will be filtered by proxy.
+  #         <<: *onlyRunOnBranches
+  #     - build-swift-packages:
+  #         requires:
+  #           - setup
+  #     - build-xcode-debug:
+  #         requires:
+  #           - setup
+  #     - build-xcode-release:
+  #         requires:
+  #           - setup
+  #     - build-carthage:
+  #         requires:
+  #           - setup
+  #     - integrate-spm:
+  #         requires:
+  #           - setup
+  #     - lint-cocoapods:
+  #         requires:
+  #           - setup
+  #     - lint-cocoapods-static:
+  #         requires:
+  #           - setup
+  #     - lint-swift:
+  #         requires:
+  #           - setup
+  #     - verify-spm-headers:
+  #         requires:
+  #           - setup
+  release:
+    jobs:
+      - setup:
+          # Since all of the jobs depend on this setup step
+          # we  only need to filter branches for this job.
+          # The rest of the jobs will be filtered by proxy.
+          <<: *onlyRunOnTags
+      - build-dynamic-for-release:
+          requires:
+            - setup
+      - publish-dynamic:
+          requires:
+            - build-dynamic-for-release
