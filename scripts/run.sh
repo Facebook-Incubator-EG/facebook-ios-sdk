@@ -306,14 +306,14 @@ build_sdk() {
 
     local branch
 
-    if [ -n "$TRAVIS_PULL_REQUEST" ] && [ "$TRAVIS_PULL_REQUEST" != "false" ]; then
-      branch="refs/pull/$TRAVIS_PULL_REQUEST/merge";
-    elif [ -n "$TRAVIS_BRANCH" ]; then
-      branch="$TRAVIS_BRANCH";
+    if [ -n "$CIRCLE_PULL_REQUEST" ] && [ "$CIRCLE_PULL_REQUEST" != "false" ]; then
+      branch="refs/pull/$CIRCLE_PULL_REQUEST/merge";
+    elif [ -n "$CIRCLE_BRANCH" ]; then
+      branch="$CIRCLE_BRANCH";
     else
       branch="master"
     fi
-    echo "Using travis branch: $branch"
+    echo "Using branch: $branch"
 
     cd "$SDK_DIR"/samples/SmoketestSPM
 
